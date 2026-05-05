@@ -1,4 +1,4 @@
-// Worker: chatik-api (исправленная версия с camelCase)
+// Worker: chatik-api (ФИНАЛЬНАЯ ВЕРСИЯ)
 // Деплой через Dashboard -> Workers & Pages -> Create application
 // Не забудьте создать D1 базу данных и связать её с Worker'ом под именем DB
 
@@ -155,8 +155,9 @@ async function handleRegister(request, env) {
 async function handleLogin(request, env) {
   const { username, password } = await request.json();
 
+  // ВАЖНО: обязательно выбираем password_hash для проверки
   const user = await env.DB.prepare(
-    'SELECT id, username, display_name, avatar_url, status FROM users WHERE username = ?'
+    'SELECT id, username, display_name, avatar_url, status, password_hash FROM users WHERE username = ?'
   ).bind(username).first();
 
   if (!user) {
@@ -254,8 +255,6 @@ async function handleCreateChat(request, env) {
 
   // Для приватных чатов проверяем, не существует ли уже чат с этими участниками
   if (type === 'private' && members && members.length === 2) {
-    // members уже содержит ID собеседника и текущего пользователя? На клиенте передаются оба.
-    // Исправляем: ищем чат, где ровно два участника: userId и memberId
     const otherMemberId = members.find(id => id !== userId);
     if (otherMemberId) {
       const existing = await env.DB.prepare(`
@@ -306,8 +305,6 @@ async function handleGetChat(chatId, request, env) {
   ).bind(chatId, userId).first();
 
   if (!chat) return jsonResponse({ error: 'Chat not found' }, 404);
-
-  // Парсим JSON массив members (хранится как текст)
   chat.members = JSON.parse(chat.members || '[]');
   return jsonResponse({ chat });
 }
@@ -318,7 +315,6 @@ async function handleGetMessages(chatId, request, env) {
   const userId = verifyToken(request.headers.get('Authorization'));
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
 
-  // Проверяем членство в чате
   const member = await env.DB.prepare(
     'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
   ).bind(chatId, userId).first();
@@ -350,7 +346,6 @@ async function handleSendMessage(chatId, request, env) {
   const { content, type = 'text', replyTo } = await request.json();
   if (!content) return jsonResponse({ error: 'Content is required' }, 400);
 
-  // Проверяем членство
   const member = await env.DB.prepare(
     'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
   ).bind(chatId, userId).first();
@@ -361,13 +356,12 @@ async function handleSendMessage(chatId, request, env) {
      VALUES (?, ?, ?, ?, ?) RETURNING id, chat_id, sender_id, content, type, reply_to, is_edited, created_at`
   ).bind(chatId, userId, content, type, replyTo || null).first();
 
-  // Добавляем информацию об отправителе
   const sender = await env.DB.prepare(
     'SELECT username, display_name FROM users WHERE id = ?'
   ).bind(userId).first();
   message.sender_username = sender.username;
   message.sender_display_name = sender.display_name;
-  message.is_read = false; // только что отправленное сообщение непрочитано для других
+  message.is_read = false;
 
   return jsonResponse({ success: true, message }, 201);
 }
