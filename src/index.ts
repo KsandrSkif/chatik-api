@@ -1,6 +1,5 @@
-// Worker: chatik-api (ФИНАЛЬНАЯ ВЕРСИЯ)
+// Worker: chatik-api
 // Деплой через Dashboard -> Workers & Pages -> Create application
-// Не забудьте создать D1 базу данных и связать её с Worker'ом под именем DB
 
 export default {
   async fetch(request, env, ctx) {
@@ -40,27 +39,27 @@ export default {
       } else if (path === '/api/chats' && method === 'POST') {
         response = await handleCreateChat(request, env);
       } else if (path.match(/^\/api\/chats\/\d+$/) && method === 'GET') {
-        const chatId = parseInt(path.split('/')[3]);
+        const chatId = path.split('/')[3];
         response = await handleGetChat(chatId, request, env);
       }
       // Message routes
       else if (path.match(/^\/api\/chats\/\d+\/messages$/) && method === 'GET') {
-        const chatId = parseInt(path.split('/')[3]);
+        const chatId = path.split('/')[3];
         response = await handleGetMessages(chatId, request, env);
       } else if (path.match(/^\/api\/chats\/\d+\/messages$/) && method === 'POST') {
-        const chatId = parseInt(path.split('/')[3]);
+        const chatId = path.split('/')[3];
         response = await handleSendMessage(chatId, request, env);
       }
       // Read status
       else if (path.match(/^\/api\/messages\/\d+\/read$/) && method === 'POST') {
-        const messageId = parseInt(path.split('/')[3]);
+        const messageId = path.split('/')[3];
         response = await handleMarkRead(messageId, request, env);
       }
       else {
         response = jsonResponse({ error: 'Not found' }, 404);
       }
 
-      // Добавляем CORS к ответу
+      // Add CORS to response
       Object.entries(corsHeaders).forEach(([key, value]) => {
         response.headers.set(key, value);
       });
@@ -73,23 +72,9 @@ export default {
   }
 };
 
-// ---------------------- Вспомогательные функции ----------------------
-
-// Преобразование всех ключей объекта из snake_case в camelCase (рекурсивно)
-function toCamelCase(obj) {
-  if (obj === null || typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map(v => toCamelCase(v));
-  const newObj = {};
-  for (const [key, value] of Object.entries(obj)) {
-    const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
-    newObj[camelKey] = toCamelCase(value);
-  }
-  return newObj;
-}
-
+// Helper functions
 function jsonResponse(data, status = 200, headers = {}) {
-  const camelData = toCamelCase(data);
-  return new Response(JSON.stringify(camelData), {
+  return new Response(JSON.stringify(data), {
     status,
     headers: { 'Content-Type': 'application/json', ...headers }
   });
@@ -105,9 +90,9 @@ async function hashPassword(password) {
 
 function generateToken(userId) {
   const header = btoa(JSON.stringify({ alg: 'none', typ: 'JWT' }));
-  const payload = btoa(JSON.stringify({
-    userId,
-    exp: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 дней
+  const payload = btoa(JSON.stringify({ 
+    userId, 
+    exp: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 days
   }));
   return `${header}.${payload}.signature`;
 }
@@ -126,17 +111,16 @@ function verifyToken(authHeader) {
   }
 }
 
-// ---------------------- Auth handlers ----------------------
-
+// Auth handlers
 async function handleRegister(request, env) {
   const { username, displayName, password } = await request.json();
-
+  
   if (!username || !displayName || !password) {
     return jsonResponse({ error: 'Missing required fields' }, 400);
   }
 
   const passwordHash = await hashPassword(password);
-
+  
   try {
     const result = await env.DB.prepare(
       `INSERT INTO users (username, display_name, password_hash) 
@@ -154,10 +138,9 @@ async function handleRegister(request, env) {
 
 async function handleLogin(request, env) {
   const { username, password } = await request.json();
-
-  // ВАЖНО: обязательно выбираем password_hash для проверки
+  
   const user = await env.DB.prepare(
-    'SELECT id, username, display_name, avatar_url, status, password_hash FROM users WHERE username = ?'
+    'SELECT id, username, display_name, password_hash FROM users WHERE username = ?'
   ).bind(username).first();
 
   if (!user) {
@@ -169,29 +152,25 @@ async function handleLogin(request, env) {
     return jsonResponse({ error: 'Invalid credentials' }, 401);
   }
 
-  // Обновляем статус и last_seen
+  // Update last seen
   await env.DB.prepare(
     'UPDATE users SET status = ?, last_seen = datetime("now") WHERE id = ?'
   ).bind('online', user.id).run();
 
   const token = generateToken(user.id);
-
-  // Возвращаем объект пользователя (поля в snake_case – toCamelCase преобразует)
+  
   return jsonResponse({
     success: true,
     token,
     user: {
       id: user.id,
       username: user.username,
-      display_name: user.display_name,
-      avatar_url: user.avatar_url,
-      status: user.status
+      displayName: user.display_name
     }
   });
 }
 
-// ---------------------- User handlers ----------------------
-
+// User handlers
 async function handleGetMe(request, env) {
   const userId = verifyToken(request.headers.get('Authorization'));
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
@@ -200,7 +179,6 @@ async function handleGetMe(request, env) {
     'SELECT id, username, display_name, avatar_url, status, last_seen FROM users WHERE id = ?'
   ).bind(userId).first();
 
-  if (!user) return jsonResponse({ error: 'User not found' }, 404);
   return jsonResponse({ user });
 }
 
@@ -221,23 +199,21 @@ async function handleSearchUsers(request, env) {
   return jsonResponse({ users: users.results });
 }
 
-// ---------------------- Chat handlers ----------------------
-
+// Chat handlers
 async function handleGetChats(request, env) {
   const userId = verifyToken(request.headers.get('Authorization'));
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
 
   const chats = await env.DB.prepare(
-    `SELECT 
-        c.id, c.name, c.type, c.avatar_url, c.created_at,
-        (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id 
-         AND m.id > COALESCE(
-           (SELECT MAX(message_id) FROM message_reads mr 
-            JOIN messages m2 ON mr.message_id = m2.id 
-            WHERE m2.chat_id = c.id AND mr.user_id = ?), 0
-         )) as unread_count,
-        (SELECT content FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message,
-        (SELECT created_at FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message_time
+    `SELECT c.*, 
+            (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id 
+             AND m.id > COALESCE(
+               (SELECT MAX(message_id) FROM message_reads mr 
+                JOIN messages m2 ON mr.message_id = m2.id 
+                WHERE m2.chat_id = c.id AND mr.user_id = ?), 0
+             )) as unread_count,
+            (SELECT content FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message,
+            (SELECT created_at FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message_time
      FROM chats c
      JOIN chat_members cm ON c.id = cm.chat_id
      WHERE cm.user_id = ?
@@ -255,28 +231,23 @@ async function handleCreateChat(request, env) {
 
   // Для приватных чатов проверяем, не существует ли уже чат с этими участниками
   if (type === 'private' && members && members.length === 2) {
-    const otherMemberId = members.find(id => id !== userId);
-    if (otherMemberId) {
-      const existing = await env.DB.prepare(`
-        SELECT c.id FROM chats c
-        JOIN chat_members cm1 ON c.id = cm1.chat_id AND cm1.user_id = ?
-        JOIN chat_members cm2 ON c.id = cm2.chat_id AND cm2.user_id = ?
-        WHERE c.type = 'private'
-        AND (SELECT COUNT(*) FROM chat_members WHERE chat_id = c.id) = 2
-      `).bind(userId, otherMemberId).first();
-      if (existing) {
-        return jsonResponse({ success: true, chatId: existing.id }, 200);
-      }
+    const existing = await env.DB.prepare(`
+      SELECT c.id FROM chats c
+      JOIN chat_members cm1 ON c.id = cm1.chat_id AND cm1.user_id = ?
+      JOIN chat_members cm2 ON c.id = cm2.chat_id AND cm2.user_id = ?
+      WHERE c.type = 'private'
+    `).bind(members[0], members[1]).first();
+    if (existing) {
+      return jsonResponse({ success: true, chatId: existing.id }, 200);
     }
   }
-
-  // Создаём чат
+  // Create chat
   const chat = await env.DB.prepare(
     'INSERT INTO chats (name, type, created_by) VALUES (?, ?, ?) RETURNING id'
   ).bind(name, type, userId).first();
 
-  // Добавляем участников
-  const allMembers = [...new Set([...(members || []), userId])];
+  // Add members
+  const allMembers = [...new Set([...members, userId])];
   for (const memberId of allMembers) {
     await env.DB.prepare(
       'INSERT INTO chat_members (chat_id, user_id, role) VALUES (?, ?, ?)'
@@ -293,8 +264,8 @@ async function handleGetChat(chatId, request, env) {
   const chat = await env.DB.prepare(
     `SELECT c.*, 
             (SELECT json_group_array(json_object(
-              'id', u.id, 'username', u.username, 'display_name', u.display_name,
-              'avatar_url', u.avatar_url, 'role', cm.role
+              'id', u.id, 'username', u.username, 'displayName', u.display_name,
+              'avatarUrl', u.avatar_url, 'role', cm.role
             ))
              FROM chat_members cm
              JOIN users u ON cm.user_id = u.id
@@ -305,19 +276,21 @@ async function handleGetChat(chatId, request, env) {
   ).bind(chatId, userId).first();
 
   if (!chat) return jsonResponse({ error: 'Chat not found' }, 404);
+
   chat.members = JSON.parse(chat.members || '[]');
   return jsonResponse({ chat });
 }
 
-// ---------------------- Message handlers ----------------------
-
+// Message handlers
 async function handleGetMessages(chatId, request, env) {
   const userId = verifyToken(request.headers.get('Authorization'));
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
 
+  // Verify membership
   const member = await env.DB.prepare(
     'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
   ).bind(chatId, userId).first();
+
   if (!member) return jsonResponse({ error: 'Access denied' }, 403);
 
   const url = new URL(request.url);
@@ -325,18 +298,18 @@ async function handleGetMessages(chatId, request, env) {
   const offset = parseInt(url.searchParams.get('offset')) || 0;
 
   const messages = await env.DB.prepare(
-    `SELECT m.id, m.chat_id, m.sender_id, m.content, m.type, m.reply_to, m.is_edited, m.created_at,
+    `SELECT m.*, 
             u.username as sender_username, 
             u.display_name as sender_display_name,
             EXISTS(SELECT 1 FROM message_reads WHERE message_id = m.id AND user_id = ?) as is_read
      FROM messages m
      JOIN users u ON m.sender_id = u.id
      WHERE m.chat_id = ?
-     ORDER BY m.created_at ASC
+     ORDER BY m.created_at DESC
      LIMIT ? OFFSET ?`
   ).bind(userId, chatId, limit, offset).all();
 
-  return jsonResponse({ messages: messages.results });
+  return jsonResponse({ messages: messages.results.reverse() });
 }
 
 async function handleSendMessage(chatId, request, env) {
@@ -344,24 +317,18 @@ async function handleSendMessage(chatId, request, env) {
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
 
   const { content, type = 'text', replyTo } = await request.json();
-  if (!content) return jsonResponse({ error: 'Content is required' }, 400);
 
+  // Verify membership
   const member = await env.DB.prepare(
     'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
   ).bind(chatId, userId).first();
+
   if (!member) return jsonResponse({ error: 'Access denied' }, 403);
 
   const message = await env.DB.prepare(
     `INSERT INTO messages (chat_id, sender_id, content, type, reply_to) 
-     VALUES (?, ?, ?, ?, ?) RETURNING id, chat_id, sender_id, content, type, reply_to, is_edited, created_at`
+     VALUES (?, ?, ?, ?, ?) RETURNING *`
   ).bind(chatId, userId, content, type, replyTo || null).first();
-
-  const sender = await env.DB.prepare(
-    'SELECT username, display_name FROM users WHERE id = ?'
-  ).bind(userId).first();
-  message.sender_username = sender.username;
-  message.sender_display_name = sender.display_name;
-  message.is_read = false;
 
   return jsonResponse({ success: true, message }, 201);
 }
