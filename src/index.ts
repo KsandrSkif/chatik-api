@@ -229,6 +229,18 @@ async function handleCreateChat(request, env) {
 
   const { name, type, members } = await request.json();
 
+  // Для приватных чатов проверяем, не существует ли уже чат с этими участниками
+  if (type === 'private' && members && members.length === 2) {
+    const existing = await env.DB.prepare(`
+      SELECT c.id FROM chats c
+      JOIN chat_members cm1 ON c.id = cm1.chat_id AND cm1.user_id = ?
+      JOIN chat_members cm2 ON c.id = cm2.chat_id AND cm2.user_id = ?
+      WHERE c.type = 'private'
+    `).bind(members[0], members[1]).first();
+    if (existing) {
+      return jsonResponse({ success: true, chatId: existing.id }, 200);
+    }
+  }
   // Create chat
   const chat = await env.DB.prepare(
     'INSERT INTO chats (name, type, created_by) VALUES (?, ?, ?) RETURNING id'
