@@ -1,0 +1,16 @@
+{
+	"compatibility_date": "2025-10-08",
+	"main": "src/index.ts",
+	"name": "chatik-api",
+	"upload_source_maps": true,
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_id": "89d53e27-1f41-4f6b-a932-a32427e13e70",
+			"database_name": "chatik-db"
+		}
+	],
+	"observability": {
+		"enabled": true
+	}
+}
