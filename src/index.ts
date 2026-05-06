@@ -1,9 +1,13 @@
+// Worker: chatik-api (оптимизированный)
+// Деплой через Dashboard -> Workers & Pages -> Create application
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
 
+    // CORS headers
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
@@ -17,36 +21,50 @@ export default {
     try {
       let response;
 
+      // Auth routes
       if (path === '/api/auth/register' && method === 'POST') {
         response = await handleRegister(request, env);
       } else if (path === '/api/auth/login' && method === 'POST') {
         response = await handleLogin(request, env);
-      } else if (path === '/api/users/me' && method === 'GET') {
+      }
+      // User routes
+      else if (path === '/api/users/me' && method === 'GET') {
         response = await handleGetMe(request, env);
       } else if (path === '/api/users/search' && method === 'GET') {
         response = await handleSearchUsers(request, env);
-      } else if (path === '/api/chats' && method === 'GET') {
+      }
+      // Chat routes
+      else if (path === '/api/chats' && method === 'GET') {
         response = await handleGetChats(request, env);
       } else if (path === '/api/chats' && method === 'POST') {
         response = await handleCreateChat(request, env);
       } else if (path.match(/^\/api\/chats\/\d+$/) && method === 'GET') {
         const chatId = path.split('/')[3];
         response = await handleGetChat(chatId, request, env);
-      } else if (path === '/api/contacts' && method === 'GET') {
-        response = await handleGetContacts(request, env);
-      } else if (path.match(/^\/api\/chats\/\d+\/messages$/) && method === 'GET') {
+      }
+      
+ // Contacts     
+else if (path === '/api/contacts' && method === 'GET') {
+    response = await handleGetContacts(request, env);
+}
+      // Message routes
+      else if (path.match(/^\/api\/chats\/\d+\/messages$/) && method === 'GET') {
         const chatId = path.split('/')[3];
         response = await handleGetMessages(chatId, request, env);
       } else if (path.match(/^\/api\/chats\/\d+\/messages$/) && method === 'POST') {
         const chatId = path.split('/')[3];
         response = await handleSendMessage(chatId, request, env);
-      } else if (path.match(/^\/api\/messages\/\d+\/read$/) && method === 'POST') {
+      }
+      // Read status
+      else if (path.match(/^\/api\/messages\/\d+\/read$/) && method === 'POST') {
         const messageId = path.split('/')[3];
         response = await handleMarkRead(messageId, request, env);
-      } else {
+      }
+      else {
         response = jsonResponse({ error: 'Not found' }, 404);
       }
 
+      // Add CORS to response
       Object.entries(corsHeaders).forEach(([key, value]) => {
         response.headers.set(key, value);
       });
@@ -79,7 +97,7 @@ function generateToken(userId) {
   const header = btoa(JSON.stringify({ alg: 'none', typ: 'JWT' }));
   const payload = btoa(JSON.stringify({ 
     userId, 
-    exp: Date.now() + 30 * 24 * 60 * 60 * 1000
+    exp: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 days
   }));
   return `${header}.${payload}.signature`;
 }
@@ -101,15 +119,19 @@ function verifyToken(authHeader) {
 // Auth handlers
 async function handleRegister(request, env) {
   const { username, displayName, password } = await request.json();
+  
   if (!username || !displayName || !password) {
     return jsonResponse({ error: 'Missing required fields' }, 400);
   }
+
   const passwordHash = await hashPassword(password);
+  
   try {
     const result = await env.DB.prepare(
       `INSERT INTO users (username, display_name, password_hash) 
        VALUES (?, ?, ?) RETURNING id, username, display_name, created_at`
     ).bind(username, displayName, passwordHash).first();
+
     return jsonResponse({ success: true, user: result }, 201);
   } catch (error) {
     if (error.message.includes('UNIQUE constraint failed')) {
@@ -121,24 +143,35 @@ async function handleRegister(request, env) {
 
 async function handleLogin(request, env) {
   const { username, password } = await request.json();
+  
   const user = await env.DB.prepare(
     'SELECT id, username, display_name, password_hash FROM users WHERE username = ?'
   ).bind(username).first();
+
   if (!user) {
     return jsonResponse({ error: 'Invalid credentials' }, 401);
   }
+
   const passwordHash = await hashPassword(password);
   if (user.password_hash !== passwordHash) {
     return jsonResponse({ error: 'Invalid credentials' }, 401);
   }
+
+  // Update last seen
   await env.DB.prepare(
     'UPDATE users SET status = ?, last_seen = datetime("now") WHERE id = ?'
   ).bind('online', user.id).run();
+
   const token = generateToken(user.id);
+  
   return jsonResponse({
     success: true,
     token,
-    user: { id: user.id, username: user.username, displayName: user.display_name }
+    user: {
+      id: user.id,
+      username: user.username,
+      displayName: user.display_name
+    }
   });
 }
 
@@ -146,21 +179,29 @@ async function handleLogin(request, env) {
 async function handleGetMe(request, env) {
   const userId = verifyToken(request.headers.get('Authorization'));
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+
   const user = await env.DB.prepare(
     'SELECT id, username, display_name, avatar_url, status, last_seen FROM users WHERE id = ?'
   ).bind(userId).first();
+
   return jsonResponse({ user });
 }
 
 async function handleSearchUsers(request, env) {
   const userId = verifyToken(request.headers.get('Authorization'));
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+
   const url = new URL(request.url);
   const query = url.searchParams.get('q') || '';
+
+  // Ограничиваем выдачу для снижения нагрузки
   const users = await env.DB.prepare(
     `SELECT id, username, display_name, avatar_url, status 
-     FROM users WHERE username LIKE ? OR display_name LIKE ? LIMIT 10`
+     FROM users 
+     WHERE username LIKE ? OR display_name LIKE ?
+     LIMIT 10`
   ).bind(`%${query}%`, `%${query}%`).all();
+
   return jsonResponse({ users: users.results });
 }
 
@@ -173,11 +214,14 @@ async function handleGetChats(request, env) {
 
   let query = `SELECT c.id, c.name, c.type, c.avatar_url, 
                       c.last_message, c.last_message_at as last_message_time,
-                      c.unread_count, c.updated_at
+                      (SELECT COUNT(*) FROM messages m 
+                       WHERE m.chat_id = c.id 
+                         AND m.id NOT IN (SELECT mr.message_id FROM message_reads mr WHERE mr.user_id = ?)
+                      ) as unread_count
                FROM chats c
                JOIN chat_members cm ON c.id = cm.chat_id
                WHERE cm.user_id = ?`;
-  const params = [userId];
+  const params = [userId, userId];
   if (since > 0) {
     query += ` AND c.updated_at > datetime(?, 'unixepoch')`;
     params.push(since);
@@ -192,8 +236,10 @@ async function handleGetChats(request, env) {
 async function handleCreateChat(request, env) {
   const userId = verifyToken(request.headers.get('Authorization'));
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+
   const { name, type, members } = await request.json();
 
+  // Для приватных чатов проверяем, не существует ли уже чат с этими участниками
   if (type === 'private' && members && members.length === 2) {
     const existing = await env.DB.prepare(`
       SELECT c.id FROM chats c
@@ -205,11 +251,13 @@ async function handleCreateChat(request, env) {
       return jsonResponse({ success: true, chatId: existing.id }, 200);
     }
   }
-
+  
+  // Create chat (last_message и last_message_at будут обновлены при первом сообщении)
   const chat = await env.DB.prepare(
     'INSERT INTO chats (name, type, created_by) VALUES (?, ?, ?) RETURNING id'
   ).bind(name, type, userId).first();
 
+  // Add members
   const allMembers = [...new Set([...members, userId])];
   for (const memberId of allMembers) {
     await env.DB.prepare(
@@ -223,6 +271,7 @@ async function handleCreateChat(request, env) {
 async function handleGetChat(chatId, request, env) {
   const userId = verifyToken(request.headers.get('Authorization'));
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+
   const chat = await env.DB.prepare(
     `SELECT c.*, 
             (SELECT json_group_array(json_object(
@@ -236,30 +285,11 @@ async function handleGetChat(chatId, request, env) {
      JOIN chat_members cm ON c.id = cm.chat_id
      WHERE c.id = ? AND cm.user_id = ?`
   ).bind(chatId, userId).first();
+
   if (!chat) return jsonResponse({ error: 'Chat not found' }, 404);
+
   chat.members = JSON.parse(chat.members || '[]');
   return jsonResponse({ chat });
-}
-
-// Contacts handler
-async function handleGetContacts(request, env) {
-  const userId = verifyToken(request.headers.get('Authorization'));
-  if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
-  const url = new URL(request.url);
-  const since = parseInt(url.searchParams.get('since') || '0');
-
-  let query = `SELECT id, username, display_name, avatar_url, status, updated_at 
-               FROM users WHERE id != ?`;
-  const params = [userId];
-  if (since > 0) {
-    query += ` AND updated_at > datetime(?, 'unixepoch')`;
-    params.push(since);
-  }
-  query += ` ORDER BY display_name`;
-
-  const users = await env.DB.prepare(query).bind(...params).all();
-  const lastModified = Math.floor(Date.now() / 1000);
-  return jsonResponse({ users: users.results, last_modified: lastModified });
 }
 
 // Message handlers
@@ -267,36 +297,46 @@ async function handleGetMessages(chatId, request, env) {
   const userId = verifyToken(request.headers.get('Authorization'));
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
 
+  // Verify membership
   const member = await env.DB.prepare(
     'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
   ).bind(chatId, userId).first();
+
   if (!member) return jsonResponse({ error: 'Access denied' }, 403);
 
   const url = new URL(request.url);
   const limit = parseInt(url.searchParams.get('limit')) || 50;
   const offset = parseInt(url.searchParams.get('offset')) || 0;
-  const since = parseInt(url.searchParams.get('since') || '0');
 
-  let query = `SELECT m.*, 
-                      u.username as sender_username, 
-                      u.display_name as sender_display_name,
-                      CASE WHEN mr.user_id IS NOT NULL THEN 1 ELSE 0 END as is_read
-               FROM messages m
-               JOIN users u ON m.sender_id = u.id
-               LEFT JOIN message_reads mr ON m.id = mr.message_id AND mr.user_id = ?
-               WHERE m.chat_id = ?`;
-  const params = [userId, chatId];
-  if (since > 0) {
-    query += ` AND m.updated_at > datetime(?, 'unixepoch')`;
-    params.push(since);
-  }
-  query += ` ORDER BY m.created_at DESC LIMIT ? OFFSET ?`;
-  params.push(limit, offset);
+  // Заменяем EXISTS на LEFT JOIN для эффективного использования индексов
+  const messages = await env.DB.prepare(
+    `SELECT m.*, 
+            u.username as sender_username, 
+            u.display_name as sender_display_name,
+            CASE WHEN mr.user_id IS NOT NULL THEN 1 ELSE 0 END as is_read
+     FROM messages m
+     JOIN users u ON m.sender_id = u.id
+     LEFT JOIN message_reads mr ON m.id = mr.message_id AND mr.user_id = ?
+     WHERE m.chat_id = ?
+     ORDER BY m.created_at DESC
+     LIMIT ? OFFSET ?`
+  ).bind(userId, chatId, limit, offset).all();
 
-  const messages = await env.DB.prepare(query).bind(...params).all();
-  const lastModified = Math.floor(Date.now() / 1000);
   // Возвращаем в прямом порядке
-  return jsonResponse({ messages: messages.results.reverse(), last_modified: lastModified });
+  return jsonResponse({ messages: messages.results.reverse() });
+}
+
+async function handleGetContacts(request, env) {
+    const userId = verifyToken(request.headers.get('Authorization'));
+    if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+
+    const users = await env.DB.prepare(
+        `SELECT id, username, display_name, avatar_url, status 
+         FROM users WHERE id != ?
+         ORDER BY display_name`
+    ).bind(userId).all();
+
+    return jsonResponse({ users: users.results });
 }
 
 async function handleSendMessage(chatId, request, env) {
@@ -305,29 +345,33 @@ async function handleSendMessage(chatId, request, env) {
 
   const { content, type = 'text', replyTo } = await request.json();
 
+  // Verify membership
   const member = await env.DB.prepare(
     'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
   ).bind(chatId, userId).first();
+
   if (!member) return jsonResponse({ error: 'Access denied' }, 403);
 
-  const now = new Date().toISOString();
   const message = await env.DB.prepare(
-    `INSERT INTO messages (chat_id, sender_id, content, type, reply_to, created_at, updated_at) 
-     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`
-  ).bind(chatId, userId, content, type, replyTo || null, now, now).first();
+    `INSERT INTO messages (chat_id, sender_id, content, type, reply_to) 
+     VALUES (?, ?, ?, ?, ?) RETURNING *`
+  ).bind(chatId, userId, content, type, replyTo || null).first();
 
+  // Денормализация: обновляем last_message и last_message_at в чате
   await env.DB.prepare(
-    `UPDATE chats SET last_message = ?, last_message_at = ?, updated_at = ? WHERE id = ?`
-  ).bind(content, now, now, chatId).run();
+    `UPDATE chats 
+     SET last_message = ?, last_message_at = CURRENT_TIMESTAMP 
+     WHERE id = ?`
+  ).bind(content, chatId).run();
 
+  // Увеличиваем unread_count для всех участников, кроме отправителя
   await env.DB.prepare(
-    `UPDATE chats SET unread_count = unread_count + 1 WHERE id = ?`
-  ).bind(chatId).run();
-
-  // Увеличиваем unread для всех, кроме отправителя
-  await env.DB.prepare(
-    `UPDATE chats SET unread_count = unread_count + 1 WHERE id = ? AND id IN (
-       SELECT chat_id FROM chat_members WHERE chat_id = ? AND user_id != ?)`
+    `UPDATE chats 
+     SET unread_count = unread_count + 1 
+     WHERE id = ? AND id IN (
+       SELECT chat_id FROM chat_members 
+       WHERE chat_id = ? AND user_id != ?
+     )`
   ).bind(chatId, chatId, userId).run();
 
   return jsonResponse({ success: true, message }, 201);
@@ -341,13 +385,17 @@ async function handleMarkRead(messageId, request, env) {
     `INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)`
   ).bind(messageId, userId).run();
 
+  // Уменьшаем unread_count в чате, к которому относится сообщение
+  // (просто сбрасываем, реальный пересчёт можно сделать по запросу,
+  //  но для простоты уменьшаем на 1)
   const chatIdRow = await env.DB.prepare(
     `SELECT chat_id FROM messages WHERE id = ?`
   ).bind(messageId).first();
   if (chatIdRow) {
     await env.DB.prepare(
-      `UPDATE chats SET unread_count = MAX(0, unread_count - 1), updated_at = datetime('now') WHERE id = ?`
+      `UPDATE chats SET unread_count = MAX(0, unread_count - 1) WHERE id = ?`
     ).bind(chatIdRow.chat_id).run();
   }
+
   return jsonResponse({ success: true });
 }
