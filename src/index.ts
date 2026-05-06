@@ -42,6 +42,11 @@ export default {
         const chatId = path.split('/')[3];
         response = await handleGetChat(chatId, request, env);
       }
+      
+ // Contacts     
+else if (path === '/api/contacts' && method === 'GET') {
+    response = await handleGetContacts(request, env);
+}
       // Message routes
       else if (path.match(/^\/api\/chats\/\d+\/messages$/) && method === 'GET') {
         const chatId = path.split('/')[3];
@@ -310,6 +315,19 @@ async function handleGetMessages(chatId, request, env) {
 
   // Возвращаем в прямом порядке
   return jsonResponse({ messages: messages.results.reverse() });
+}
+
+async function handleGetContacts(request, env) {
+    const userId = verifyToken(request.headers.get('Authorization'));
+    if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+
+    const users = await env.DB.prepare(
+        `SELECT id, username, display_name, avatar_url, status 
+         FROM users WHERE id != ?
+         ORDER BY display_name`
+    ).bind(userId).all();
+
+    return jsonResponse({ users: users.results });
 }
 
 async function handleSendMessage(chatId, request, env) {
