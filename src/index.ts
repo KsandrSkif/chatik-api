@@ -1,12 +1,10 @@
-// Worker: chatik-api (исправленный)
-// Деплой через Dashboard -> Workers & Pages -> Create application
+// worker.js — полный код
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
 
-    // CORS headers
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
@@ -19,58 +17,64 @@ export default {
 
     try {
       let response;
-
-      // Auth routes
+      // Auth
       if (path === '/api/auth/register' && method === 'POST') {
         response = await handleRegister(request, env);
       } else if (path === '/api/auth/login' && method === 'POST') {
         response = await handleLogin(request, env);
       }
-      // User routes
+      // Users
       else if (path === '/api/users/me' && method === 'GET') {
         response = await handleGetMe(request, env);
       } else if (path === '/api/users/search' && method === 'GET') {
         response = await handleSearchUsers(request, env);
       }
-      // Chat routes
+      // Chats
       else if (path === '/api/chats' && method === 'GET') {
         response = await handleGetChats(request, env);
       } else if (path === '/api/chats' && method === 'POST') {
         response = await handleCreateChat(request, env);
       } else if (path.match(/^\/api\/chats\/\d+$/) && method === 'GET') {
-        const chatId = parseInt(path.split('/')[3]);
-        response = await handleGetChat(chatId, request, env);
+        response = await handleGetChat(parseInt(path.split('/')[3]), request, env);
+      } else if (path.match(/^\/api\/chats\/\d+$/) && method === 'PUT') {
+        response = await handleUpdateChat(parseInt(path.split('/')[3]), request, env);
       } else if (path.match(/^\/api\/chats\/\d+\/read$/) && method === 'POST') {
-        const chatId = parseInt(path.split('/')[4]);
-        response = await handleReadAllMessages(chatId, request, env);
+        response = await handleReadAllMessages(parseInt(path.split('/')[4]), request, env);
+      }
+      // Members
+      else if (path.match(/^\/api\/chats\/\d+\/members$/) && method === 'GET') {
+        response = await handleGetChatMembers(parseInt(path.split('/')[3]), request, env);
+      } else if (path.match(/^\/api\/chats\/\d+\/members$/) && method === 'POST') {
+        response = await handleAddMembers(parseInt(path.split('/')[3]), request, env);
+      } else if (path.match(/^\/api\/chats\/\d+\/members\/\d+$/) && method === 'DELETE') {
+        const parts = path.split('/');
+        response = await handleRemoveMember(parseInt(parts[3]), parseInt(parts[5]), request, env);
+      } else if (path.match(/^\/api\/chats\/\d+\/members\/\d+\/role$/) && method === 'PUT') {
+        const parts = path.split('/');
+        response = await handleUpdateMemberRole(parseInt(parts[3]), parseInt(parts[5]), request, env);
       }
       // Contacts
       else if (path === '/api/contacts' && method === 'GET') {
         response = await handleGetContacts(request, env);
       }
-      // Message routes
+      // Messages
       else if (path.match(/^\/api\/chats\/\d+\/messages$/) && method === 'GET') {
-        const chatId = parseInt(path.split('/')[3]);
-        response = await handleGetMessages(chatId, request, env);
+        response = await handleGetMessages(parseInt(path.split('/')[3]), request, env);
       } else if (path.match(/^\/api\/chats\/\d+\/messages$/) && method === 'POST') {
-        const chatId = parseInt(path.split('/')[3]);
-        response = await handleSendMessage(chatId, request, env);
+        response = await handleSendMessage(parseInt(path.split('/')[3]), request, env);
       }
-      // Read status (single message)
+      // Read single message
       else if (path.match(/^\/api\/messages\/\d+\/read$/) && method === 'POST') {
-        const messageId = parseInt(path.split('/')[3]);
-        response = await handleMarkRead(messageId, request, env);
+        response = await handleMarkRead(parseInt(path.split('/')[3]), request, env);
       }
       else {
         response = jsonResponse({ error: 'Not found' }, 404);
       }
 
-      // Add CORS to response
       Object.entries(corsHeaders).forEach(([key, value]) => {
         response.headers.set(key, value);
       });
       return response;
-
     } catch (error) {
       console.error('Error:', error);
       return jsonResponse({ error: 'Internal server error', details: error.message }, 500, corsHeaders);
@@ -78,7 +82,7 @@ export default {
   }
 };
 
-// Helper functions
+// ---------- Вспомогательные функции ----------
 function jsonResponse(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -86,38 +90,23 @@ function jsonResponse(data, status = 200, headers = {}) {
   });
 }
 
-// Безопасное хэширование пароля через PBKDF2
 async function hashPassword(password, env) {
   const encoder = new TextEncoder();
-  const salt = encoder.encode(env.PASSWORD_SALT || 'chatik-salt-2024'); // Соль из переменной окружения
+  const salt = encoder.encode(env.PASSWORD_SALT || 'chatik-salt-2024');
   const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits']
+    'raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']
   );
   const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      salt: salt,
-      iterations: 100_000,
-      hash: 'SHA-256'
-    },
-    keyMaterial,
-    256
+    { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
+    keyMaterial, 256
   );
   const hashArray = Array.from(new Uint8Array(derivedBits));
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// JWT с HMAC-SHA256
 async function generateToken(userId, env) {
   const header = { alg: 'HS256', typ: 'JWT' };
-  const payload = {
-    userId,
-    exp: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60 // 30 дней
-  };
+  const payload = { userId, exp: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60 };
   const headerB64 = btoa(JSON.stringify(header)).replace(/=+$/, '');
   const payloadB64 = btoa(JSON.stringify(payload)).replace(/=+$/, '');
   const signature = await sign(`${headerB64}.${payloadB64}`, env);
@@ -137,50 +126,37 @@ async function verifyToken(authHeader, env) {
     const payload = JSON.parse(atob(parts[1]));
     if (payload.exp * 1000 < Date.now()) return null;
     return payload.userId;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function sign(data, env) {
   const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(env.JWT_SECRET || 'fallback-secret-change-me'),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
+    'raw', new TextEncoder().encode(env.JWT_SECRET || 'fallback-secret-change-me'),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
   );
   return await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
 }
 
 async function verifySignature(data, signature, env) {
   const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(env.JWT_SECRET || 'fallback-secret-change-me'),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify']
+    'raw', new TextEncoder().encode(env.JWT_SECRET || 'fallback-secret-change-me'),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']
   );
   return await crypto.subtle.verify('HMAC', key, signature, new TextEncoder().encode(data));
 }
 
-// Auth handlers
+// ---------- Обработчики ----------
 async function handleRegister(request, env) {
   const { username, display_name, password } = await request.json();
-  if (!username || !display_name || !password) {
-    return jsonResponse({ error: 'Missing required fields' }, 400);
-  }
+  if (!username || !display_name || !password) return jsonResponse({ error: 'Missing required fields' }, 400);
   const passwordHash = await hashPassword(password, env);
   try {
     const result = await env.DB.prepare(
-      `INSERT INTO users (username, display_name, password_hash) 
-       VALUES (?, ?, ?) RETURNING id, username, display_name, created_at`
+      `INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?) RETURNING id, username, display_name, created_at`
     ).bind(username, display_name, passwordHash).first();
     return jsonResponse({ success: true, user: result }, 201);
   } catch (error) {
-    if (error.message.includes('UNIQUE constraint failed')) {
-      return jsonResponse({ error: 'Username already exists' }, 409);
-    }
+    if (error.message.includes('UNIQUE constraint failed')) return jsonResponse({ error: 'Username already exists' }, 409);
     throw error;
   }
 }
@@ -192,22 +168,17 @@ async function handleLogin(request, env) {
   ).bind(username).first();
   if (!user) return jsonResponse({ error: 'Invalid credentials' }, 401);
   const passwordHash = await hashPassword(password, env);
-  if (user.password_hash !== passwordHash) {
-    return jsonResponse({ error: 'Invalid credentials' }, 401);
-  }
-  // Обновляем статус, last_seen и updated_at
+  if (user.password_hash !== passwordHash) return jsonResponse({ error: 'Invalid credentials' }, 401);
   await env.DB.prepare(
     'UPDATE users SET status = ?, last_seen = datetime("now"), updated_at = datetime("now") WHERE id = ?'
   ).bind('online', user.id).run();
   const token = await generateToken(user.id, env);
   return jsonResponse({
-    success: true,
-    token,
+    success: true, token,
     user: { id: user.id, username: user.username, display_name: user.display_name }
   });
 }
 
-// User handlers
 async function handleGetMe(request, env) {
   const userId = await verifyToken(request.headers.get('Authorization'), env);
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
@@ -223,15 +194,11 @@ async function handleSearchUsers(request, env) {
   const url = new URL(request.url);
   const query = url.searchParams.get('q') || '';
   const users = await env.DB.prepare(
-    `SELECT id, username, display_name, avatar_url, status 
-     FROM users 
-     WHERE (username LIKE ? OR display_name LIKE ?) AND id != ?
-     LIMIT 10`
+    `SELECT id, username, display_name, avatar_url, status FROM users WHERE (username LIKE ? OR display_name LIKE ?) AND id != ? LIMIT 10`
   ).bind(`%${query}%`, `%${query}%`, userId).all();
   return jsonResponse({ users: users.results });
 }
 
-// Chat handlers (исправленный last_modified)
 async function handleGetChats(request, env) {
   const userId = await verifyToken(request.headers.get('Authorization'), env);
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
@@ -240,8 +207,7 @@ async function handleGetChats(request, env) {
 
   let query = `SELECT c.id, c.name, c.type, c.avatar_url, 
                       c.last_message, c.last_message_at as last_message_time,
-                      (SELECT COUNT(*) FROM messages m 
-                       WHERE m.chat_id = c.id 
+                      (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id 
                          AND m.id NOT IN (SELECT mr.message_id FROM message_reads mr WHERE mr.user_id = ?)
                       ) as unread_count,
                       c.updated_at
@@ -254,14 +220,12 @@ async function handleGetChats(request, env) {
     params.push(since);
   }
   query += ` ORDER BY c.last_message_at DESC`;
-
   const result = await env.DB.prepare(query).bind(...params).all();
   const chats = result.results.map(c => ({
     id: c.id, name: c.name, type: c.type, avatar_url: c.avatar_url,
     last_message: c.last_message, last_message_time: c.last_message_time,
     unread_count: c.unread_count
   }));
-  // Вычисляем максимальный updated_at среди вернувшихся чатов, или since, если ничего не изменилось
   const maxUpdated = result.results.reduce((max, c) => {
     const ts = Math.floor(new Date(c.updated_at + 'Z').getTime() / 1000);
     return Math.max(max, ts);
@@ -273,9 +237,7 @@ async function handleCreateChat(request, env) {
   const userId = await verifyToken(request.headers.get('Authorization'), env);
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
   const { name, type, members } = await request.json();
-  if (!type || !['private', 'group', 'channel'].includes(type)) {
-    return jsonResponse({ error: 'Invalid chat type' }, 400);
-  }
+  if (!type || !['private', 'group', 'channel'].includes(type)) return jsonResponse({ error: 'Invalid chat type' }, 400);
 
   if (type === 'private' && members && members.length === 2) {
     const existing = await env.DB.prepare(`
@@ -305,15 +267,9 @@ async function handleGetChat(chatId, request, env) {
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
   const chat = await env.DB.prepare(
     `SELECT c.*, 
-            (SELECT json_group_array(json_object(
-              'id', u.id, 'username', u.username, 'display_name', u.display_name,
-              'avatar_url', u.avatar_url, 'role', cm.role
-            ))
-             FROM chat_members cm
-             JOIN users u ON cm.user_id = u.id
-             WHERE cm.chat_id = c.id) as members
-     FROM chats c
-     JOIN chat_members cm ON c.id = cm.chat_id
+            (SELECT json_group_array(json_object('id', u.id, 'username', u.username, 'display_name', u.display_name, 'avatar_url', u.avatar_url, 'role', cm.role))
+             FROM chat_members cm JOIN users u ON cm.user_id = u.id WHERE cm.chat_id = c.id) as members
+     FROM chats c JOIN chat_members cm ON c.id = cm.chat_id
      WHERE c.id = ? AND cm.user_id = ?`
   ).bind(chatId, userId).first();
   if (!chat) return jsonResponse({ error: 'Chat not found' }, 404);
@@ -321,19 +277,43 @@ async function handleGetChat(chatId, request, env) {
   return jsonResponse({ chat });
 }
 
-// Contacts (исправленный last_modified)
+async function handleUpdateChat(chatId, request, env) {
+  const userId = await verifyToken(request.headers.get('Authorization'), env);
+  if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const member = await env.DB.prepare(
+    'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
+  ).bind(chatId, userId).first();
+  if (!member || member.role !== 'admin') return jsonResponse({ error: 'Only admins can edit chat' }, 403);
+  const { name, avatar_url } = await request.json();
+  await env.DB.prepare(
+    'UPDATE chats SET name = ?, avatar_url = ?, updated_at = datetime("now") WHERE id = ?'
+  ).bind(name || null, avatar_url || null, chatId).run();
+  return jsonResponse({ success: true });
+}
+
+async function handleReadAllMessages(chatId, request, env) {
+  const userId = await verifyToken(request.headers.get('Authorization'), env);
+  if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const unread = await env.DB.prepare(
+    `SELECT m.id FROM messages m WHERE m.chat_id = ? AND m.id NOT IN (SELECT message_id FROM message_reads WHERE user_id = ?)`
+  ).bind(chatId, userId).all();
+  if (unread.results.length > 0) {
+    const stmt = env.DB.prepare(`INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)`);
+    const batch = unread.results.map(r => stmt.bind(r.id, userId));
+    await env.DB.batch(batch);
+    await env.DB.prepare('UPDATE chats SET unread_count = 0 WHERE id = ?').bind(chatId).run();
+  }
+  return jsonResponse({ success: true });
+}
+
 async function handleGetContacts(request, env) {
   const userId = await verifyToken(request.headers.get('Authorization'), env);
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
   const url = new URL(request.url);
   const since = parseInt(url.searchParams.get('since') || '0');
-
   let query = `SELECT id, username, display_name, avatar_url, status, updated_at FROM users WHERE id != ?`;
   const params = [userId];
-  if (since > 0) {
-    query += ` AND updated_at > datetime(?, 'unixepoch')`;
-    params.push(since);
-  }
+  if (since > 0) { query += ` AND updated_at > datetime(?, 'unixepoch')`; params.push(since); }
   query += ` ORDER BY display_name`;
   const result = await env.DB.prepare(query).bind(...params).all();
   const users = result.results.map(u => ({
@@ -347,7 +327,6 @@ async function handleGetContacts(request, env) {
   return jsonResponse({ users, last_modified: maxUpdated });
 }
 
-// Message handlers (исправленный since + пагинация с before)
 async function handleGetMessages(chatId, request, env) {
   const userId = await verifyToken(request.headers.get('Authorization'), env);
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
@@ -355,35 +334,22 @@ async function handleGetMessages(chatId, request, env) {
     'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
   ).bind(chatId, userId).first();
   if (!member) return jsonResponse({ error: 'Access denied' }, 403);
-
   const url = new URL(request.url);
   const limit = Math.min(parseInt(url.searchParams.get('limit')) || 50, 100);
   const since = parseInt(url.searchParams.get('since') || '0');
-  const before = url.searchParams.get('before'); // id сообщения, загрузить старше него
-
+  const before = url.searchParams.get('before');
   let query = `SELECT m.*, u.username as sender_username, u.display_name as sender_display_name,
                       CASE WHEN mr.user_id IS NOT NULL THEN 1 ELSE 0 END as is_read
-               FROM messages m
-               JOIN users u ON m.sender_id = u.id
+               FROM messages m JOIN users u ON m.sender_id = u.id
                LEFT JOIN message_reads mr ON m.id = mr.message_id AND mr.user_id = ?
                WHERE m.chat_id = ?`;
   const params = [userId, chatId];
-
-  if (before) {
-    query += ` AND m.id < ?`;
-    params.push(parseInt(before));
-  } else if (since > 0) {
-    query += ` AND m.created_at > datetime(?, 'unixepoch')`;
-    params.push(since);
-  }
-
+  if (before) { query += ` AND m.id < ?`; params.push(parseInt(before)); }
+  else if (since > 0) { query += ` AND m.created_at > datetime(?, 'unixepoch')`; params.push(since); }
   query += ` ORDER BY m.created_at DESC LIMIT ?`;
   params.push(limit);
-
   const result = await env.DB.prepare(query).bind(...params).all();
-  // Возвращаем в прямом порядке
   const messages = result.results.reverse();
-  // last_modified: максимум created_at среди возвращённых, или since
   const maxCreated = messages.reduce((max, m) => {
     const ts = Math.floor(new Date(m.created_at + 'Z').getTime() / 1000);
     return Math.max(max, ts);
@@ -395,28 +361,20 @@ async function handleSendMessage(chatId, request, env) {
   const userId = await verifyToken(request.headers.get('Authorization'), env);
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
   const { content, type = 'text', reply_to } = await request.json();
-
   const member = await env.DB.prepare(
     'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
   ).bind(chatId, userId).first();
   if (!member) return jsonResponse({ error: 'Access denied' }, 403);
-
   const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
   const message = await env.DB.prepare(
-    `INSERT INTO messages (chat_id, sender_id, content, type, reply_to, created_at, updated_at) 
-     VALUES (?, ?, ?, ?, ?, datetime(?), datetime(?)) RETURNING *`
+    `INSERT INTO messages (chat_id, sender_id, content, type, reply_to, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime(?), datetime(?)) RETURNING *`
   ).bind(chatId, userId, content, type, reply_to || null, now, now).first();
-
   await env.DB.prepare(
-    `UPDATE chats SET last_message = ?, last_message_at = datetime(?), updated_at = datetime(?) WHERE id = ?`
+    'UPDATE chats SET last_message = ?, last_message_at = datetime(?), updated_at = datetime(?) WHERE id = ?'
   ).bind(content, now, now, chatId).run();
-
-  // Увеличиваем unread_count всем, кроме отправителя
   await env.DB.prepare(
-    `UPDATE chats SET unread_count = unread_count + 1 WHERE id = ? AND id IN (
-       SELECT chat_id FROM chat_members WHERE chat_id = ? AND user_id != ?)`
+    'UPDATE chats SET unread_count = unread_count + 1 WHERE id = ? AND id IN (SELECT chat_id FROM chat_members WHERE chat_id = ? AND user_id != ?)'
   ).bind(chatId, chatId, userId).run();
-
   return jsonResponse({ success: true, message }, 201);
 }
 
@@ -424,38 +382,96 @@ async function handleMarkRead(messageId, request, env) {
   const userId = await verifyToken(request.headers.get('Authorization'), env);
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
   await env.DB.prepare(
-    `INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)`
+    'INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)'
   ).bind(messageId, userId).run();
-
-  const chatRow = await env.DB.prepare(`SELECT chat_id FROM messages WHERE id = ?`).bind(messageId).first();
+  const chatRow = await env.DB.prepare('SELECT chat_id FROM messages WHERE id = ?').bind(messageId).first();
   if (chatRow) {
-    await env.DB.prepare(
-      `UPDATE chats SET unread_count = MAX(0, unread_count - 1) WHERE id = ?`
-    ).bind(chatRow.chat_id).run();
+    await env.DB.prepare('UPDATE chats SET unread_count = MAX(0, unread_count - 1) WHERE id = ?').bind(chatRow.chat_id).run();
   }
   return jsonResponse({ success: true });
 }
 
-// Новый endpoint: отметить все сообщения чата прочитанными для пользователя
-async function handleReadAllMessages(chatId, request, env) {
+async function handleGetChatMembers(chatId, request, env) {
   const userId = await verifyToken(request.headers.get('Authorization'), env);
   if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const access = await env.DB.prepare(
+    'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
+  ).bind(chatId, userId).first();
+  if (!access) return jsonResponse({ error: 'Access denied' }, 403);
+  const members = await env.DB.prepare(
+    `SELECT u.id, u.username, u.display_name, u.avatar_url, cm.role, cm.joined_at
+     FROM chat_members cm JOIN users u ON cm.user_id = u.id
+     WHERE cm.chat_id = ? ORDER BY cm.role DESC, u.display_name`
+  ).bind(chatId).all();
+  return jsonResponse({ members: members.results });
+}
 
-  // Получаем все сообщения чата, у которых нет записи в message_reads для этого пользователя
-  const unread = await env.DB.prepare(
-    `SELECT m.id FROM messages m
-     WHERE m.chat_id = ? AND m.id NOT IN (
-       SELECT message_id FROM message_reads WHERE user_id = ?
-     )`
-  ).bind(chatId, userId).all();
+async function handleAddMembers(chatId, request, env) {
+  const userId = await verifyToken(request.headers.get('Authorization'), env);
+  if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const member = await env.DB.prepare(
+    'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
+  ).bind(chatId, userId).first();
+  if (!member || member.role !== 'admin') return jsonResponse({ error: 'Only admins can add members' }, 403);
+  const { members } = await request.json();
+  const chat = await env.DB.prepare('SELECT type FROM chats WHERE id = ?').bind(chatId).first();
+  if (chat.type === 'private') return jsonResponse({ error: 'Cannot add to private chat' }, 400);
+  const stmt = env.DB.prepare('INSERT OR IGNORE INTO chat_members (chat_id, user_id, role) VALUES (?, ?, ?)');
+  const batch = members.map(m => stmt.bind(chatId, m, 'member'));
+  await env.DB.batch(batch);
+  await env.DB.prepare('UPDATE chats SET updated_at = datetime("now") WHERE id = ?').bind(chatId).run();
+  return jsonResponse({ success: true });
+}
 
-  if (unread.results.length > 0) {
-    const stmt = env.DB.prepare(`INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)`);
-    const batch = unread.results.map(r => stmt.bind(r.id, userId));
-    await env.DB.batch(batch);
-    await env.DB.prepare(
-      `UPDATE chats SET unread_count = 0 WHERE id = ?`
-    ).bind(chatId).run();
+async function handleRemoveMember(chatId, memberId, request, env) {
+  const userId = await verifyToken(request.headers.get('Authorization'), env);
+  if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const chat = await env.DB.prepare('SELECT type FROM chats WHERE id = ?').bind(chatId).first();
+  if (chat.type === 'private') return jsonResponse({ error: 'Cannot leave private chat' }, 400);
+  const currentMember = await env.DB.prepare(
+    'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
+  ).bind(chatId, userId).first();
+  if (!currentMember) return jsonResponse({ error: 'Not a member' }, 403);
+  const isSelf = userId === memberId;
+  if (!isSelf && currentMember.role !== 'admin') return jsonResponse({ error: 'Only admins can remove others' }, 403);
+  const adminCount = await env.DB.prepare(
+    'SELECT COUNT(*) as cnt FROM chat_members WHERE chat_id = ? AND role = "admin"'
+  ).bind(chatId).first();
+  const totalMembers = await env.DB.prepare(
+    'SELECT COUNT(*) as cnt FROM chat_members WHERE chat_id = ?'
+  ).bind(chatId).first();
+  const targetRole = (await env.DB.prepare(
+    'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
+  ).bind(chatId, memberId).first())?.role;
+  if (totalMembers.cnt > 1 && targetRole === 'admin' && adminCount.cnt === 1) {
+    return jsonResponse({ error: 'Cannot remove the last admin.' }, 400);
   }
+  await env.DB.prepare('DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?').bind(chatId, memberId).run();
+  return jsonResponse({ success: true });
+}
+
+async function handleUpdateMemberRole(chatId, memberId, request, env) {
+  const userId = await verifyToken(request.headers.get('Authorization'), env);
+  if (!userId) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const currentMember = await env.DB.prepare(
+    'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
+  ).bind(chatId, userId).first();
+  if (!currentMember || currentMember.role !== 'admin') return jsonResponse({ error: 'Only admins can change roles' }, 403);
+  const { role } = await request.json();
+  if (!['admin', 'member'].includes(role)) return jsonResponse({ error: 'Invalid role' }, 400);
+  if (role === 'member') {
+    const adminCount = await env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM chat_members WHERE chat_id = ? AND role = "admin"'
+    ).bind(chatId).first();
+    const targetRole = (await env.DB.prepare(
+      'SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?'
+    ).bind(chatId, memberId).first())?.role;
+    if (targetRole === 'admin' && adminCount.cnt === 1) {
+      return jsonResponse({ error: 'Cannot demote the last admin.' }, 400);
+    }
+  }
+  await env.DB.prepare(
+    'UPDATE chat_members SET role = ? WHERE chat_id = ? AND user_id = ?'
+  ).bind(role, chatId, memberId).run();
   return jsonResponse({ success: true });
 }
