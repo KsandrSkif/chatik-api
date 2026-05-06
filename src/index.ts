@@ -345,33 +345,27 @@ async function handleSendMessage(chatId, request, env) {
 
   const { content, type = 'text', replyTo } = await request.json();
 
-  // Verify membership
   const member = await env.DB.prepare(
     'SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?'
   ).bind(chatId, userId).first();
 
   if (!member) return jsonResponse({ error: 'Access denied' }, 403);
 
+  // Используем datetime('now') для единообразия (UTC)
   const message = await env.DB.prepare(
-    `INSERT INTO messages (chat_id, sender_id, content, type, reply_to) 
-     VALUES (?, ?, ?, ?, ?) RETURNING *`
+    `INSERT INTO messages (chat_id, sender_id, content, type, reply_to, created_at, updated_at) 
+     VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now')) RETURNING *`
   ).bind(chatId, userId, content, type, replyTo || null).first();
 
-  // Денормализация: обновляем last_message и last_message_at в чате
+  // Обновляем чат
   await env.DB.prepare(
-    `UPDATE chats 
-     SET last_message = ?, last_message_at = CURRENT_TIMESTAMP 
-     WHERE id = ?`
+    `UPDATE chats SET last_message = ?, last_message_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`
   ).bind(content, chatId).run();
 
-  // Увеличиваем unread_count для всех участников, кроме отправителя
+  // Увеличиваем unread_count всем, кроме отправителя
   await env.DB.prepare(
-    `UPDATE chats 
-     SET unread_count = unread_count + 1 
-     WHERE id = ? AND id IN (
-       SELECT chat_id FROM chat_members 
-       WHERE chat_id = ? AND user_id != ?
-     )`
+    `UPDATE chats SET unread_count = unread_count + 1 WHERE id = ? AND id IN (
+       SELECT chat_id FROM chat_members WHERE chat_id = ? AND user_id != ?)`
   ).bind(chatId, chatId, userId).run();
 
   return jsonResponse({ success: true, message }, 201);
