@@ -195,8 +195,9 @@ async function handleLogin(request, env) {
   if (user.password_hash !== passwordHash) {
     return jsonResponse({ error: 'Invalid credentials' }, 401);
   }
+  // Обновляем статус, last_seen и updated_at
   await env.DB.prepare(
-    'UPDATE users SET status = ?, last_seen = datetime("now") WHERE id = ?'
+    'UPDATE users SET status = ?, last_seen = datetime("now"), updated_at = datetime("now") WHERE id = ?'
   ).bind('online', user.id).run();
   const token = await generateToken(user.id, env);
   return jsonResponse({
