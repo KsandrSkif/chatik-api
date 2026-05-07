@@ -369,13 +369,28 @@ async function handleSendMessage(chatId, request, env) {
   const message = await env.DB.prepare(
     `INSERT INTO messages (chat_id, sender_id, content, type, reply_to, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime(?), datetime(?)) RETURNING *`
   ).bind(chatId, userId, content, type, reply_to || null, now, now).first();
+  
+  // Получаем данные отправителя
+  const sender = await env.DB.prepare(
+    'SELECT username, display_name FROM users WHERE id = ?'
+  ).bind(userId).first();
+  
   await env.DB.prepare(
     'UPDATE chats SET last_message = ?, last_message_at = datetime(?), updated_at = datetime(?) WHERE id = ?'
   ).bind(content, now, now, chatId).run();
   await env.DB.prepare(
     'UPDATE chats SET unread_count = unread_count + 1 WHERE id = ? AND id IN (SELECT chat_id FROM chat_members WHERE chat_id = ? AND user_id != ?)'
   ).bind(chatId, chatId, userId).run();
-  return jsonResponse({ success: true, message }, 201);
+  
+  // Формируем ответ с добавлением sender_username и sender_display_name
+  return jsonResponse({
+    success: true,
+    message: {
+      ...message,
+      sender_username: sender ? sender.username : '',
+      sender_display_name: sender ? sender.display_name : ''
+    }
+  }, 201);
 }
 
 async function handleMarkRead(messageId, request, env) {
